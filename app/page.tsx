@@ -57,7 +57,7 @@ export default function FriendDashboard() {
 
     // Listen for new screenshots arriving in real-time
     const channel = supabase
-      .channel("public:copilot_sessions")
+      .channel(`copilot-session-${sessionCode}`)
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "copilot_sessions", filter: `session_code=eq.${sessionCode}` },
