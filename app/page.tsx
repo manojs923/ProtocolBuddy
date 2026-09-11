@@ -23,36 +23,34 @@ export default function FriendDashboard() {
   const [answer, setAnswer] = useState("");
   const [status, setStatus] = useState("AWAITING CONNECTION...");
 
-  // Fetch captures when connected
-  const fetchCaptures = async () => {
-    if (!sessionCode) return;
-    
-    const { data, error } = await supabase
-      .from("copilot_sessions")
-      .select("*")
-      .eq("session_code", sessionCode)
-      .not("image_url", "is", null)
-      .order("created_at", { ascending: true });
-
-    if (error) {
-      setStatus("ERROR FETCHING DATA");
-      return;
-    }
-
-    // Group images by Batch ID so they don't mix
-    const grouped = data.reduce((acc: Record<string, SessionData[]>, curr) => {
-      if (!acc[curr.batch_id]) acc[curr.batch_id] = [];
-      acc[curr.batch_id].push(curr);
-      return acc;
-    }, {});
-
-    setBatches(grouped);
-    setStatus("LIVE & SYNCED");
-  };
-
+  // Optimized Realtime listener & fetcher hook
   useEffect(() => {
-    if (!isConnected) return;
-    
+    if (!isConnected || !sessionCode) return;
+
+    const fetchCaptures = async () => {
+      const { data, error } = await supabase
+        .from("copilot_sessions")
+        .select("*")
+        .eq("session_code", sessionCode)
+        .not("image_url", "is", null)
+        .order("created_at", { ascending: true });
+
+      if (error) {
+        setStatus("ERROR FETCHING DATA");
+        return;
+      }
+
+      // Group images by Batch ID so they don't mix
+      const grouped = data.reduce((acc: Record<string, SessionData[]>, curr) => {
+        if (!acc[curr.batch_id]) acc[curr.batch_id] = [];
+        acc[curr.batch_id].push(curr);
+        return acc;
+      }, {});
+
+      setBatches(grouped);
+      setStatus("LIVE & SYNCED");
+    };
+
     fetchCaptures();
 
     // Listen for new screenshots arriving in real-time
@@ -60,17 +58,24 @@ export default function FriendDashboard() {
       .channel(`copilot-session-${sessionCode}`)
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "copilot_sessions", filter: `session_code=eq.${sessionCode}` },
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "copilot_sessions",
+          filter: `session_code=eq.${sessionCode}`,
+        },
         () => {
           fetchCaptures();
         }
       )
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [isConnected, sessionCode]);
 
-// 🛡️ FIXED CORS-SAFE STITCH & COPY FUNCTION
+  // 🛡️ CORS-SAFE STITCH & COPY FUNCTION WITH CANVAS HEIGHT GUARD
   const copyBatchToClipboard = async (batchImages: SessionData[]) => {
     setStatus("STITCHING IMAGES...");
     try {
@@ -99,6 +104,15 @@ export default function FriendDashboard() {
         if (img.width > maxWidth) maxWidth = img.width;
       });
 
+      // Guard against browser maximum canvas limits (15,000px cap)
+      const MAX_CANVAS_HEIGHT = 15000;
+      let scale = 1;
+      if (totalHeight > MAX_CANVAS_HEIGHT) {
+        scale = MAX_CANVAS_HEIGHT / totalHeight;
+        totalHeight = MAX_CANVAS_HEIGHT;
+        maxWidth = Math.floor(maxWidth * scale);
+      }
+
       // Create canvas and draw stacked images
       const canvas = document.createElement("canvas");
       canvas.width = maxWidth;
@@ -107,8 +121,10 @@ export default function FriendDashboard() {
 
       let currentY = 0;
       loadedImages.forEach((img) => {
-        ctx?.drawImage(img, 0, currentY);
-        currentY += img.height;
+        const drawWidth = scale === 1 ? img.width : Math.floor(img.width * scale);
+        const drawHeight = scale === 1 ? img.height : Math.floor(img.height * scale);
+        ctx?.drawImage(img, 0, currentY, drawWidth, drawHeight);
+        currentY += drawHeight;
       });
 
       // Convert canvas to blob and write to clipboard
@@ -119,7 +135,6 @@ export default function FriendDashboard() {
           await navigator.clipboard.write([item]);
           setStatus("BATCH COPIED TO CLIPBOARD ✅");
         } catch (clipboardErr) {
-          // Fallback mechanism if permissions block direct write
           console.warn("ClipboardItem failed, trying fallback...", clipboardErr);
           setStatus("FAILED TO WRITE TO CLIPBOARD DIRECTLY");
         }
@@ -199,7 +214,7 @@ export default function FriendDashboard() {
               </div>
             )}
 
-            {Object.keys(batches).reverse().map((batchId, index) => (
+            {Object.keys(batches).reverse().map((batchId) => (
               <div key={batchId} className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
                 <div className="bg-slate-800/50 p-3 flex items-center justify-between border-b border-slate-800">
                   <span className="text-xs font-bold text-slate-400">BATCH: {batchId}</span>
@@ -250,4 +265,3 @@ export default function FriendDashboard() {
     </div>
   );
 }
-
